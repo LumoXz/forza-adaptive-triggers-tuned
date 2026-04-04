@@ -24,7 +24,7 @@ Real-time adaptive trigger and haptic feedback for a PS5 DualSense controller wh
 
 ## Quick start (pre-built)
 
-Download `ForzaAdaptiveTriggers.exe` from the [`release/`](release/) folder — no installation or .NET required.
+Download `ForzaAdaptiveTriggers.exe` from the [Releases](../../releases/latest) page — no installation or .NET required.
 
 ## Build from source
 

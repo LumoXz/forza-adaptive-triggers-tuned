@@ -4,61 +4,56 @@ using ForzaAdaptiveTriggers.Telemetry;
 namespace ForzaAdaptiveTriggers.Mapping;
 
 /// <summary>
-/// Maps throttle telemetry to a right-trigger TriggerCommand.
-///
-/// Priority:
-///   1. Accel &lt; 20        → Off
-///   2. RPM limiter       → Vibration 20–40 Hz
-///   3. Wheel slip > 1.5  → Off  (traction loss — trigger goes light)
-///   4. Normal driving    → ContinuousResistance, force scales with speed × Accel input
+/// "True spring" right-trigger mapping, tuned for a buttery engage transition:
+///  - wide hysteresis band (enter 60 / exit 10) so the critical engage region
+///    never lets telemetry jitter reach the trigger
+///  - longer EMA window (alpha 0.25) swallowing quick Accel flips
+///  - force floor of 45 once engaged, so the transition starts with a
+///    perceptible baseline instead of a weak, jitter-prone low zone
 /// </summary>
-public static class RightTriggerMapper
+public sealed class RightTriggerMapper
 {
-    private const float SlipThreshold   = 1.5f;
-    private const float RpmLimiterRatio = 0.98f;
+    // Linear spring: force = Accel * 1.0 + 0 — full pedal = full force.
+    private const float AccelToForce = 1.0f;
+    private const float AccelOffset  = 0f;
 
-    public static TriggerCommand Map(in FH5Packet p)
+    // Wide hysteresis: engage at 60, release at 10.
+    private const byte AccelOnThreshold  = 60;
+    private const byte AccelOffThreshold = 10;
+
+    // Force floor once engaged — helps the transition feel solid.
+    private const byte ForceFloor = 45;
+
+    // Longer EMA: alpha 0.25 at ~82 Hz settles in ~4 packets (~50 ms).
+    private const float SmoothingAlpha = 0.25f;
+
+    private bool  _engaged;
+    private float _smoothForce;
+    private bool  _haveSmooth;
+
+    public TriggerCommand Map(in FH5Packet p)
     {
-        if (p.Accel < 20)
-            return TriggerCommand.Off;
+        bool shouldRelease = _engaged
+            ? p.Accel < AccelOffThreshold
+            : p.Accel < AccelOnThreshold;
 
-        // ── 1. RPM Limiter ───────────────────────────────────────────────
-        if (p.EngineMaxRpm > 0 && p.CurrentEngineRpm >= p.EngineMaxRpm * RpmLimiterRatio)
+        if (shouldRelease)
         {
-            float ratio = 0f;
-            float range = p.EngineMaxRpm * (1f - RpmLimiterRatio);
-            if (range > 0)
-                ratio = Math.Clamp((p.CurrentEngineRpm - p.EngineMaxRpm * RpmLimiterRatio) / range, 0f, 1f);
-
-            // Quantize to nearest 5 Hz to reduce redundant HID writes
-            byte freq = (byte)((int)Math.Round((20f + ratio * 20f) / 5f) * 5);
-            return new TriggerCommand(TriggerMode.Vibration, freq);
+            _engaged   = false;
+            _haveSmooth = false;
+            return TriggerCommand.Off;
         }
 
-        // ── 2. Wheel Slip ────────────────────────────────────────────────
-        float avgSlip = p.DrivetrainType == 0
-            ? (p.TireCombinedSlipFL + p.TireCombinedSlipFR) * 0.5f   // FWD
-            : (p.TireCombinedSlipRL + p.TireCombinedSlipRR) * 0.5f;  // RWD / AWD
+        _engaged = true;
 
-        if (avgSlip > SlipThreshold)
-            return TriggerCommand.Off;
+        float rawForce = Math.Clamp(p.Accel * AccelToForce + AccelOffset, ForceFloor, 255f);
 
-        // ── 3. Normal Driving ─────────────────────────────────────────────
-        // Force scales with throttle input and speed
-        // At standstill full throttle ≈ 150; at 200 kph full throttle = 255
-        float speedKph   = p.Speed * 3.6f;
-        float speedScale = Math.Clamp(0.8f + speedKph / 300f, 0.8f, 1.0f);
-        float rawForce   = p.Accel * speedScale;
+        // EMA smooth
+        _smoothForce = _haveSmooth
+            ? _smoothForce + SmoothingAlpha * (rawForce - _smoothForce)
+            : rawForce;
+        _haveSmooth = true;
 
-        // Floor: always at least 120 so light-press is still perceptible
-        rawForce = Math.Max(rawForce, 120f);
-
-        if (p.Boost > 1.0f)
-            rawForce = Math.Min(rawForce * 1.15f, 255f);
-
-        // Quantize to nearest 5 to reduce redundant HID writes
-        byte force = (byte)Math.Clamp((int)(Math.Round(rawForce / 5f) * 5f), 0, 255);
-
-        return new TriggerCommand(TriggerMode.ContinuousResistance, force);
+        return new TriggerCommand(TriggerMode.ContinuousResistance, (byte)Math.Clamp((int)_smoothForce, 0, 255));
     }
 }

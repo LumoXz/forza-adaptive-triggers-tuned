@@ -8,24 +8,12 @@ public sealed class TelemetryLoop
 {
     private readonly DualSenseManager _controller;
     private readonly UdpListener      _udp;
-
-    // Packet-rate reporting (stderr every 5 s)
-    private int      _packetCount;
-    private DateTime _rateWindow = DateTime.UtcNow;
+    private readonly RightTriggerMapper _rightMapper = new();
 
     // Watchdog: reset if no packet arrives for 2 s (game closed / loading screen)
     private volatile bool _packetReceivedRecently;
     private const int WatchdogIntervalMs = 500;
     private const int IdleTimeoutMs      = 2000;
-
-    // Frozen-telemetry detection: FH5 keeps sending the same values when paused
-    // If Accel, Brake, and Speed are identical for 30+ consecutive frames (~0.5 s at 60 Hz),
-    // treat the session as paused and release triggers
-    private byte  _frozenAccel;
-    private byte  _frozenBrake;
-    private float _frozenSpeed;
-    private int   _frozenFrames;
-    private const int FrozenThreshold = 30;
 
     public TelemetryLoop(DualSenseManager controller, UdpListener udp)
     {
@@ -46,11 +34,9 @@ public sealed class TelemetryLoop
                 TryConnectController();
 
             _packetReceivedRecently = true;
-            ReportPacketRate();
 
-            // Release triggers when game is in a menu or telemetry is frozen (paused)
-            bool frozen = IsFrozen(in packet);
-            if (packet.IsRaceOn == 0 || frozen)
+            // In menus / loading screens the game zeroes telemetry; release everything.
+            if (packet.IsRaceOn == 0)
             {
                 _controller.SetRightTrigger(TriggerCommand.Off);
                 _controller.SetLeftTrigger(TriggerCommand.Off);
@@ -58,10 +44,12 @@ public sealed class TelemetryLoop
                 continue;
             }
 
-            _controller.SetRightTrigger(RightTriggerMapper.Map(in packet));
+            _controller.SetRightTrigger(_rightMapper.Map(in packet));
             _controller.SetLeftTrigger(LeftTriggerMapper.Map(in packet));
 
-            // Haptics only while actually moving — surface values are noisy at standstill
+            // Surface rumble only while moving — values are noisy at standstill.
+            // NOTE: HapticsMapper is currently disabled (see its header) so this
+            // just keeps the motors zero.
             if (packet.Speed > 1.0f)
             {
                 var (leftMotor, rightMotor) = HapticsMapper.Map(in packet);
@@ -72,28 +60,6 @@ public sealed class TelemetryLoop
                 _controller.SetRumble(0, 0);
             }
         }
-    }
-
-    /// <summary>
-    /// Returns true if Accel, Brake, and Speed have been identical for FrozenThreshold
-    /// consecutive frames — the signature of FH5's pause menu.
-    /// </summary>
-    private bool IsFrozen(in FH5Packet p)
-    {
-        if (p.Accel == _frozenAccel && p.Brake == _frozenBrake &&
-            Math.Abs(p.Speed - _frozenSpeed) < 0.001f)
-        {
-            _frozenFrames++;
-        }
-        else
-        {
-            _frozenFrames = 0;
-            _frozenAccel  = p.Accel;
-            _frozenBrake  = p.Brake;
-            _frozenSpeed  = p.Speed;
-        }
-
-        return _frozenFrames >= FrozenThreshold;
     }
 
     private async Task RunWatchdogAsync(CancellationToken ct)
@@ -128,16 +94,5 @@ public sealed class TelemetryLoop
             Console.Error.WriteLine("[ForzaTriggers] DualSense connected.");
         else
             Console.Error.WriteLine("[ForzaTriggers] DualSense not found — will retry on next packet.");
-    }
-
-    private void ReportPacketRate()
-    {
-        _packetCount++;
-        var elapsed = (DateTime.UtcNow - _rateWindow).TotalSeconds;
-        if (elapsed < 5.0) return;
-
-        Console.Error.WriteLine($"[ForzaTriggers] Packet rate: {_packetCount / elapsed:F1} Hz");
-        _packetCount = 0;
-        _rateWindow  = DateTime.UtcNow;
     }
 }

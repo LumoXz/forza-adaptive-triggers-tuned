@@ -52,10 +52,10 @@ public sealed class DualSenseManager : IDisposable
     private bool            _isBluetooth;
 
     private TriggerCommand _lastLeft  = TriggerCommand.Off;
-    private TriggerCommand _lastRight = TriggerCommand.Off;
-    private byte _lastLeftMotor  = 255; // force send on first connect
-    private byte _lastRightMotor = 255;
-    private bool _disposed;
+        private TriggerCommand _lastRight = TriggerCommand.Off;
+        private byte _lastLeftMotor  = 255; // force send on first connect
+        private byte _lastRightMotor = 255;
+        private bool _disposed;
 
     public bool IsConnected => _handle is { IsInvalid: false, IsClosed: false };
 
@@ -178,11 +178,11 @@ public sealed class DualSenseManager : IDisposable
                                              motorRight, motorLeft, r, g, b, playerLed, includeUi);
 
         bool ok = NativeMethods.WriteFile(_handle, report, report.Length, out _, nint.Zero);
-        if (!ok)
-        {
-            int err = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
-            Console.Error.WriteLine($"[DualSense] WriteFile failed: err={err}");
-        }
+                if (!ok)
+                {
+                    int err = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+                    Console.Error.WriteLine($"[DualSense] WriteFile failed: err={err}");
+                }
     }
 
     private static byte[] BuildUsb(

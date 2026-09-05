@@ -35,30 +35,17 @@ public sealed class TelemetryLoop
 
             _packetReceivedRecently = true;
 
-            // In menus / loading screens the game zeroes telemetry; release everything.
+            // In menus / loading screens the game zeroes telemetry; release the triggers.
+            // (Vibration is never touched — it belongs to Steam Input / the game.)
             if (packet.IsRaceOn == 0)
             {
                 _controller.SetRightTrigger(TriggerCommand.Off);
                 _controller.SetLeftTrigger(TriggerCommand.Off);
-                _controller.SetRumble(0, 0);
                 continue;
             }
 
             _controller.SetRightTrigger(_rightMapper.Map(in packet));
             _controller.SetLeftTrigger(LeftTriggerMapper.Map(in packet));
-
-            // Surface rumble only while moving — values are noisy at standstill.
-            // NOTE: HapticsMapper is currently disabled (see its header) so this
-            // just keeps the motors zero.
-            if (packet.Speed > 1.0f)
-            {
-                var (leftMotor, rightMotor) = HapticsMapper.Map(in packet);
-                _controller.SetRumble(leftMotor, rightMotor);
-            }
-            else
-            {
-                _controller.SetRumble(0, 0);
-            }
         }
     }
 
@@ -82,7 +69,6 @@ public sealed class TelemetryLoop
                 {
                     _controller.SetRightTrigger(TriggerCommand.Off);
                     _controller.SetLeftTrigger(TriggerCommand.Off);
-                    _controller.SetRumble(0, 0);
                 }
             }
         }

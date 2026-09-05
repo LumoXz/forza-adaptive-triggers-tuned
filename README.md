@@ -2,7 +2,7 @@
 
 Real-time adaptive trigger support for the PS5 DualSense controller while playing Forza Horizon 5 on PC. Reads the game's UDP telemetry and drives the trigger motors directly over HID — no mods, no overlays, no third-party controller wrappers.
 
-**Feels like a real pedal:** trigger force tracks how hard you press (linear "true spring"), instead of wobbling with telemetry noise.
+**Feels like a real pedal:** trigger force tracks how hard you press (progressive spring curve), instead of wobbling with telemetry noise.
 
 ## Effects
 
@@ -13,8 +13,9 @@ Real-time adaptive trigger support for the PS5 DualSense controller while playin
 | Brake pressed | Left trigger resists proportionally to pedal depth |
 | Brake released | Left trigger free |
 | Menus / paused | All effects off |
+| Vibration (any time) | Untouched — owned by Steam Input / the game |
 
-Surface rumble (road texture / puddles) is **disabled by default** — the game's own vibration already provides haptics. Flip `HapticsMapper.Enabled` to `true` to re-enable telemetry-driven rumble.
+**Vibration is not touched at all.** The app's HID reports leave the rumble fields unclaimed (the vibration bits in `valid_flag0` are clear), so Steam Input / the game own the motors — the in-game vibration toggle and intensity slider behave exactly as they would without this app.
 
 ## Why it feels steady (design notes)
 
@@ -64,7 +65,7 @@ dotnet publish ForzaAdaptiveTriggers -c Release -r win-x64 --self-contained -p:P
 
 Press **Ctrl+C** or close the window to exit. Triggers are reset to no resistance on shutdown.
 
-> **Note:** If you use Steam Input, disable the game's Steam-side DualSense vibration (Properties → Controller → Additional settings) — otherwise two programs write the same HID report and the vibration/trigger effects fight each other.
+> **Steam Input:** vibration can stay enabled. This app never claims the rumble fields of the DualSense output report, so Steam's rumble translation and the trigger effects write disjoint parts of the report and cannot fight each other.
 
 ## Tuning
 
@@ -72,12 +73,12 @@ All feel parameters are constants in `Mapping/`:
 
 | Parameter | Location | Default | Meaning |
 |---|---|---|---|
-| `AccelToForce` | RightTriggerMapper | 1.0 | pedal depth → force scale |
-| `AccelOnThreshold` | RightTriggerMapper | 60 | engage when accel ≥ this (0–255) |
-| `AccelOffThreshold` | RightTriggerMapper | 10 | release when accel < this |
+| `CurveExponent` | RightTriggerMapper | 1.5 | progressive spring curve (1.0 = linear, 2.0 = aggressive) |
+| `AccelOnThreshold` / `AccelOffThreshold` | RightTriggerMapper | 60 / 10 | engage / release hysteresis on pedal depth (0–255) |
 | `ForceFloor` | both mappers | 45 | minimum force once engaged |
-| `SmoothingAlpha` | both mappers | 0.25 | EMA low-pass (lower = smoother) |
-| `Brake*` | LeftTriggerMapper | same defaults | brake side, same shape |
+| `SmoothingAlpha` | Right / Left mapper | 0.12 / 0.25 | EMA low-pass (lower = smoother) |
+| `ForceQuantum` | RightTriggerMapper | 12 | coarse force quantization — removes per-frame motor "buzz" |
+| `BrakeOnThreshold` / `BrakeOffThreshold` | LeftTriggerMapper | 60 / 10 | brake side, linear curve |
 
 ## Troubleshooting
 
@@ -98,16 +99,15 @@ ForzaAdaptiveTriggers/
 │   ├── TriggerCommand.cs         — immutable record describing one trigger effect
 │   └── DualSenseManager.cs       — direct HID writes to DualSense; USB + BT report builder
 ├── Mapping/
-│   ├── RightTriggerMapper.cs     — throttle telemetry → TriggerCommand (true spring)
-│   ├── LeftTriggerMapper.cs      — brake telemetry → TriggerCommand (true spring)
-│   └── HapticsMapper.cs          — surface data → (leftMotor, rightMotor) — disabled
+│   ├── RightTriggerMapper.cs     — throttle telemetry → TriggerCommand (progressive spring)
+│   └── LeftTriggerMapper.cs      — brake telemetry → TriggerCommand (true spring)
 └── App/
     └── TelemetryLoop.cs          — main await-foreach loop, watchdog
 ```
 
 ## How it works
 
-FH5 broadcasts a 324-byte UDP datagram at ~60-80 Hz with real-time telemetry (speed, RPM, pedal input, tyre slip, surface data). This app parses the packet, maps the pedal values to trigger forces, and writes DualSense output reports directly over HID using `WriteFile` (Windows interrupt pipe). The USB/BT report layout is implemented from the [DualSense HID spec](https://controllers.fandom.com/wiki/Sony_DualSense) — no third-party controller wrappers.
+FH5 broadcasts a 324-byte UDP datagram at ~60-80 Hz with real-time telemetry (speed, RPM, pedal input, tyre slip, surface data). This app parses the packet, maps the pedal values to trigger forces, and writes DualSense output reports directly over HID using `WriteFile` (Windows interrupt pipe). The USB/BT report layout is implemented from the [DualSense HID spec](https://controllers.fandom.com/wiki/Sony_DualSense) — no third-party controller wrappers. Only the trigger fields are claimed in the output report; rumble is left to Steam Input / the game.
 
 ## License
 

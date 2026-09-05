@@ -8,16 +8,22 @@ namespace ForzaAdaptiveTriggers.Controller;
 ///
 /// Device discovery uses HidSharp. Writes use WriteFile (interrupt OUT pipe).
 ///
+/// Ownership: this app writes ADAPTIVE TRIGGERS only. Rumble is left to
+/// Steam Input / the game: valid_flag0 leaves the vibration bits clear
+/// (0x01 compatible vibration, 0x02 haptics select — bit definitions per
+/// the Linux kernel hid-playstation.c driver), so the controller ignores
+/// the motor bytes in our reports and never overrides Steam's rumble.
+///
 /// USB:  Report ID 0x02, 48 bytes.
 /// BT:   Report ID 0x31, 78 bytes, CRC32 appended over [0xA2 + report[0..73]].
 ///       Detected by presence of Bluetooth UUID in the device path.
 ///
 /// Output report layout (USB):
 ///   [0]      Report ID (0x02)
-///   [1]      valid_flag0 — 0xFF enables all features
+///   [1]      valid_flag0 — 0xFC (vibration bits 0x01/0x02 deliberately clear)
 ///   [2]      valid_flag1 — 0xF7
-///   [3]      motor_right (weak rumble)
-///   [4]      motor_left  (strong rumble)
+///   [3]      motor_right — always 0, field not claimed
+///   [4]      motor_left  — always 0, field not claimed
 ///   [5..10]  audio + power-save (0)
 ///   [11]     right trigger effect mode
 ///   [12..21] right trigger params (10 bytes)
@@ -52,10 +58,8 @@ public sealed class DualSenseManager : IDisposable
     private bool            _isBluetooth;
 
     private TriggerCommand _lastLeft  = TriggerCommand.Off;
-        private TriggerCommand _lastRight = TriggerCommand.Off;
-        private byte _lastLeftMotor  = 255; // force send on first connect
-        private byte _lastRightMotor = 255;
-        private bool _disposed;
+    private TriggerCommand _lastRight = TriggerCommand.Off;
+    private bool _disposed;
 
     public bool IsConnected => _handle is { IsInvalid: false, IsClosed: false };
 
@@ -84,6 +88,7 @@ public sealed class DualSenseManager : IDisposable
 
             Console.Error.WriteLine($"[DualSense] Selected: {device.DevicePath}");
             Console.Error.WriteLine($"[DualSense] Bluetooth: {_isBluetooth}");
+            Console.Error.WriteLine("[DualSense] Rumble left to Steam/game — adaptive triggers only");
 
             _handle = NativeMethods.CreateFile(
                 device.DevicePath,
@@ -103,11 +108,9 @@ public sealed class DualSenseManager : IDisposable
 
             _lastLeft  = TriggerCommand.Off;
             _lastRight = TriggerCommand.Off;
-            _lastLeftMotor  = 255;
-            _lastRightMotor = 255;
 
             // Initial state: triggers off, blue lightbar, player-1 LED
-            SendReport(0x05, new byte[10], 0x05, new byte[10], 0, 0, 0, 0, 128, 0x04, true);
+            SendReport(0x05, new byte[10], 0x05, new byte[10], 0, 0, 128, 0x04, true);
 
             return true;
         }
@@ -133,19 +136,10 @@ public sealed class DualSenseManager : IDisposable
         Flush();
     }
 
-    public void SetRumble(byte leftMotor, byte rightMotor)
-    {
-        if (!IsConnected) return;
-        if (leftMotor == _lastLeftMotor && rightMotor == _lastRightMotor) return;
-        _lastLeftMotor  = leftMotor;
-        _lastRightMotor = rightMotor;
-        Flush();
-    }
-
     public void ResetAll()
     {
         if (!IsConnected) return;
-        try { SendReport(0x05, new byte[10], 0x05, new byte[10], 0, 0, 0, 0, 128, 0x04, true); }
+        try { SendReport(0x05, new byte[10], 0x05, new byte[10], 0, 0, 128, 0x04, true); }
         catch { }
     }
 
@@ -157,8 +151,7 @@ public sealed class DualSenseManager : IDisposable
         (byte lm, byte[] lp) = TranslateRaw(_lastLeft);
         try
         {
-            SendReport(rm, rp, lm, lp, _lastRightMotor, _lastLeftMotor,
-                       0, 0, 128, 0x04, true);
+            SendReport(rm, rp, lm, lp, 0, 0, 128, 0x04, true);
         }
         catch { DisposeHandle(); }
     }
@@ -166,37 +159,34 @@ public sealed class DualSenseManager : IDisposable
     private void SendReport(
         byte rightMode, byte[] rightParams,
         byte leftMode,  byte[] leftParams,
-        byte motorRight, byte motorLeft,
         byte r, byte g, byte b, byte playerLed,
         bool includeUi)
     {
         if (_handle is null || _handle.IsInvalid) return;
 
         var report = _isBluetooth ? BuildBt(rightMode, rightParams, leftMode, leftParams,
-                                            motorRight, motorLeft, r, g, b, playerLed, includeUi)
+                                            r, g, b, playerLed, includeUi)
                                   : BuildUsb(rightMode, rightParams, leftMode, leftParams,
-                                             motorRight, motorLeft, r, g, b, playerLed, includeUi);
+                                             r, g, b, playerLed, includeUi);
 
         bool ok = NativeMethods.WriteFile(_handle, report, report.Length, out _, nint.Zero);
-                if (!ok)
-                {
-                    int err = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
-                    Console.Error.WriteLine($"[DualSense] WriteFile failed: err={err}");
-                }
+        if (!ok)
+        {
+            int err = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+            Console.Error.WriteLine($"[DualSense] WriteFile failed: err={err}");
+        }
     }
 
     private static byte[] BuildUsb(
         byte rightMode, byte[] rightParams,
         byte leftMode,  byte[] leftParams,
-        byte motorRight, byte motorLeft,
         byte r, byte g, byte b, byte playerLed, bool includeUi)
     {
         var report = new byte[UsbReportLen];
         report[0]  = UsbReportId;
-        report[1]  = 0xFF;  // valid_flag0
+        report[1]  = 0xFC;  // valid_flag0 — vibration bits (0x01/0x02) clear: rumble belongs to Steam/game
         report[2]  = 0xF7;  // valid_flag1
-        report[3]  = motorRight;
-        report[4]  = motorLeft;
+        // [3]/[4] motor bytes stay 0 — field not claimed, controller ignores them
         report[11] = rightMode;
         Array.Copy(rightParams, 0, report, 12, Math.Min(10, rightParams.Length));
         report[22] = leftMode;
@@ -217,16 +207,14 @@ public sealed class DualSenseManager : IDisposable
     private static byte[] BuildBt(
         byte rightMode, byte[] rightParams,
         byte leftMode,  byte[] leftParams,
-        byte motorRight, byte motorLeft,
         byte r, byte g, byte b, byte playerLed, bool includeUi)
     {
         var report = new byte[BtReportLen];
         report[0]  = BtReportId;
         report[1]  = 0x10;   // BT HID output-enable flag
-        report[2]  = 0xFF;   // valid_flag0
+        report[2]  = 0xFC;   // valid_flag0 — vibration bits (0x01/0x02) clear: rumble belongs to Steam/game
         report[3]  = 0xF7;   // valid_flag1
-        report[4]  = motorRight;
-        report[5]  = motorLeft;
+        // [4]/[5] motor bytes stay 0 — field not claimed, controller ignores them
         report[12] = rightMode;
         Array.Copy(rightParams, 0, report, 13, Math.Min(10, rightParams.Length));
         report[23] = leftMode;

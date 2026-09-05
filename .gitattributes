@@ -1,0 +1,6 @@
+# Normalize line endings: repo stores LF, working tree gets platform default
+* text=auto eol=lf
+*.csproj text eol=crlf
+*.sln text eol=crlf
+*.exe binary
+*.dll binary
